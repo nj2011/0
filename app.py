@@ -6,14 +6,14 @@ from datetime import datetime
 import hashlib
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app)
 
 # Database file path
 DB_FILE = 'database.json'
-ADMIN_KEY = os.environ.get('ADMIN_KEY', 'YOUR_SECRET_ADMIN_KEY_HERE')  # Change this!
+ADMIN_KEY = os.environ.get('ADMIN_KEY', 'YOUR_SECRET_ADMIN_KEY_HERE')
 
-# Load database from file
 def load_database():
+    """Load database from file"""
     if not os.path.exists(DB_FILE):
         return {
             "combos": [],
@@ -41,8 +41,8 @@ def load_database():
             }
         }
 
-# Save database to file
 def save_database(data):
+    """Save database to file"""
     try:
         with open(DB_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -51,14 +51,13 @@ def save_database(data):
         print(f"Error saving database: {e}")
         return False
 
-# Hash combo for faster lookup
 def hash_combo(combo):
+    """Create MD5 hash of combo for faster lookup"""
     return hashlib.md5(combo.strip().lower().encode()).hexdigest()
-
 
 @app.route('/', methods=['GET', 'POST', 'OPTIONS'])
 def handle_request():
-    # Handle CORS preflight requests
+    """Main endpoint for database operations"""
     if request.method == 'OPTIONS':
         return '', 200
     
@@ -78,16 +77,17 @@ def handle_request():
             })
         
         return jsonify({
-            "status": "ok", 
+            "status": "ok",
             "message": "Database server running",
             "endpoints": {
                 "GET ?action=metadata": "Get database metadata",
+                "GET ?action=stats": "Get detailed statistics",
                 "POST with JSON": "Compare combos or add new combos"
             }
         })
     
     elif request.method == 'POST':
-        # Handle both JSON and form data
+        # Handle JSON data
         if request.is_json:
             data = request.get_json()
         else:
@@ -125,9 +125,8 @@ def handle_request():
                 'non_matched_combos': non_matched
             })
         
-        # Add combos to database (admin only)
+        # Add combos to database
         elif 'add_combos' in data:
-            # Check admin key
             if data.get('admin_key') != ADMIN_KEY:
                 return jsonify({
                     'success': False,
@@ -156,7 +155,6 @@ def handle_request():
                     added_combos.append(combo)
                     added_hashes.append(combo_hash)
             
-            # Update database
             if 'combos' not in db:
                 db['combos'] = []
             if 'hashes' not in db:
@@ -190,15 +188,14 @@ def handle_request():
             'error': 'Invalid request. Use "combos" or "add_combos" parameter'
         }), 400
 
-
 @app.route('/health', methods=['GET'])
 def health_check():
+    """Health check endpoint"""
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "database_exists": os.path.exists(DB_FILE)
     })
-
 
 @app.route('/add_bulk', methods=['POST'])
 def add_bulk():
@@ -222,7 +219,9 @@ def add_bulk():
     db = load_database()
     existing_hashes = set(db.get('hashes', []))
     
+    added_combos = []
     added = 0
+    
     for combo in combos:
         combo_hash = hash_combo(combo)
         if combo_hash not in existing_hashes:
@@ -233,6 +232,7 @@ def add_bulk():
                 db['hashes'] = []
             db['combos'].append(combo)
             db['hashes'].append(combo_hash)
+            added_combos.append(combo)
             added += 1
     
     db['metadata'] = {
@@ -247,14 +247,15 @@ def add_bulk():
             'success': True,
             'added': added,
             'total': len(db['combos']),
-            'skipped': len(combos) - added
+            'skipped': len(combos) - added,
+            'sample_added': added_combos[:5]  # Show first 5 added as sample
         })
     else:
         return jsonify({'success': False, 'error': 'Failed to save'}), 500
 
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    print(f"Starting database server on port {port}")
-    print(f"Admin key set: {'Yes' if ADMIN_KEY != 'YOUR_SECRET_ADMIN_KEY_HERE' else 'No (using default)'}")
+    print(f"🚀 Starting database server on port {port}")
+    print(f"🔑 Admin key set: {'✅ Yes' if ADMIN_KEY != 'YOUR_SECRET_ADMIN_KEY_HERE' else '⚠️ Using default'}")
+    print(f"📁 Database file: {DB_FILE}")
     app.run(host='0.0.0.0', port=port, debug=False)
