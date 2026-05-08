@@ -10,7 +10,6 @@ CORS(app)
 
 # Database file path
 DB_FILE = 'database.json'
-ADMIN_KEY = os.environ.get('ADMIN_KEY', 'YOUR_SECRET_ADMIN_KEY_HERE')
 
 def load_database():
     """Load database from file"""
@@ -82,7 +81,8 @@ def handle_request():
             "endpoints": {
                 "GET ?action=metadata": "Get database metadata",
                 "GET ?action=stats": "Get detailed statistics",
-                "POST with JSON": "Compare combos or add new combos"
+                "POST with JSON": "Compare combos",
+                "POST /add_bulk_public": "Add combos (no auth)"
             }
         })
     
@@ -125,67 +125,9 @@ def handle_request():
                 'non_matched_combos': non_matched
             })
         
-        # Add combos to database
-        elif 'add_combos' in data:
-            if data.get('admin_key') != ADMIN_KEY:
-                return jsonify({
-                    'success': False,
-                    'error': 'Invalid admin key'
-                }), 401
-            
-            new_combos_text = data['add_combos']
-            new_combos = [c.strip() for c in new_combos_text.split('\n') if c.strip() and ':' in c]
-            
-            if not new_combos:
-                return jsonify({
-                    'success': False,
-                    'error': 'No valid combos to add'
-                }), 400
-            
-            db = load_database()
-            existing_hashes = set(db.get('hashes', []))
-            
-            added_combos = []
-            added_hashes = []
-            
-            for combo in new_combos:
-                combo_hash = hash_combo(combo)
-                if combo_hash not in existing_hashes:
-                    existing_hashes.add(combo_hash)
-                    added_combos.append(combo)
-                    added_hashes.append(combo_hash)
-            
-            if 'combos' not in db:
-                db['combos'] = []
-            if 'hashes' not in db:
-                db['hashes'] = []
-            
-            db['combos'].extend(added_combos)
-            db['hashes'].extend(added_hashes)
-            
-            db['metadata'] = {
-                'total_lines': len(db['combos']),
-                'latest_added': len(added_combos),
-                'date_added': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                'added_by': data.get('added_by', 'Admin')
-            }
-            
-            if save_database(db):
-                return jsonify({
-                    'success': True,
-                    'added': len(added_combos),
-                    'total': len(db['combos']),
-                    'message': f"Added {len(added_combos)} new combos"
-                })
-            else:
-                return jsonify({
-                    'success': False,
-                    'error': 'Failed to save database'
-                }), 500
-        
         return jsonify({
             'success': False,
-            'error': 'Invalid request. Use "combos" or "add_combos" parameter'
+            'error': 'Invalid request. Use "combos" parameter'
         }), 400
 
 @app.route('/health', methods=['GET'])
@@ -197,19 +139,21 @@ def health_check():
         "database_exists": os.path.exists(DB_FILE)
     })
 
-@app.route('/add_bulk', methods=['POST'])
-def add_bulk():
-    """Bulk add combos from file content"""
+@app.route('/add_bulk_public', methods=['POST', 'OPTIONS'])
+def add_bulk_public():
+    """Public endpoint for auto-uploading valid accounts (no admin key required)"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
     if not request.is_json:
         return jsonify({'success': False, 'error': 'JSON required'}), 400
     
     data = request.get_json()
-    
-    if data.get('admin_key') != ADMIN_KEY:
-        return jsonify({'success': False, 'error': 'Invalid admin key'}), 401
-    
     combos_text = data.get('combos', '')
-    added_by = data.get('added_by', 'Bulk Upload')
+    added_by = data.get('added_by', 'Auto-Upload')
+    
+    if not combos_text:
+        return jsonify({'success': False, 'error': 'No combos provided'}), 400
     
     combos = [c.strip() for c in combos_text.split('\n') if c.strip() and ':' in c]
     
@@ -251,11 +195,69 @@ def add_bulk():
             'sample_added': added_combos[:5]  # Show first 5 added as sample
         })
     else:
-        return jsonify({'success': False, 'error': 'Failed to save'}), 500
+        return jsonify({'success': False, 'error': 'Failed to save database'}), 500
+
+@app.route('/stats', methods=['GET'])
+def get_stats():
+    """Get detailed database statistics"""
+    db = load_database()
+    
+    # Calculate additional stats
+    combos = db.get('combos', [])
+    total = len(combos)
+    
+    # Count unique domains in emails (approximate)
+    domains = {}
+    for combo in combos[:1000]:  # Limit for performance
+        if ':' in combo:
+            email = combo.split(':')[0]
+            if '@' in email:
+                domain = email.split('@')[1]
+                domains[domain] = domains.get(domain, 0) + 1
+    
+    top_domains = sorted(domains.items(), key=lambda x: x[1], reverse=True)[:10]
+    
+    return jsonify({
+        'success': True,
+        'total_combos': total,
+        'total_hashes': len(db.get('hashes', [])),
+        'metadata': db.get('metadata', {}),
+        'top_domains': top_domains
+    })
+
+@app.route('/clear', methods=['POST'])
+def clear_database():
+    """Clear the database (for testing only)"""
+    # Optional: Add a secret key for security
+    secret = request.headers.get('X-Clear-Secret', '')
+    if secret != 'clear_all_data_123':
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    
+    new_db = {
+        "combos": [],
+        "hashes": [],
+        "metadata": {
+            "total_lines": 0,
+            "latest_added": 0,
+            "date_added": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "added_by": "System (Cleared)"
+        }
+    }
+    
+    if save_database(new_db):
+        return jsonify({'success': True, 'message': 'Database cleared successfully'})
+    else:
+        return jsonify({'success': False, 'error': 'Failed to clear database'}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     print(f"🚀 Starting database server on port {port}")
-    print(f"🔑 Admin key set: {'✅ Yes' if ADMIN_KEY != 'YOUR_SECRET_ADMIN_KEY_HERE' else '⚠️ Using default'}")
     print(f"📁 Database file: {DB_FILE}")
+    print(f"📊 Endpoints:")
+    print(f"   GET  /                    - Server info")
+    print(f"   GET  /health              - Health check")
+    print(f"   GET  /stats               - Database statistics")
+    print(f"   GET  /?action=metadata    - Get metadata")
+    print(f"   POST /                    - Compare combos")
+    print(f"   POST /add_bulk_public     - Add combos (public)")
     app.run(host='0.0.0.0', port=port, debug=False)
